@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import xgboost as xgb
@@ -8,6 +10,7 @@ from scipy.stats import mstats
 import sklearn.tree as sktree
 from sklearn.tree import _tree as sktree_internal
 from sklearn.cluster import KMeans
+from sklearn.model_selection import train_test_split
 
 from load import *
 
@@ -47,7 +50,8 @@ def tree_to_code(fn_name, tree, feature_names, value_map):
 def train_tree_regressor(fn_name, feats, labels, kernel_map, **kwargs):
     model = sktree.DecisionTreeRegressor(random_state=0, **kwargs)
     model = model.fit(feats, labels)
-    return tree_to_code(fn_name, model, ['m', 'k', 'n', 'batch'], kernel_map)
+    return tree_to_code(fn_name, model, ['m', 'k', 'n', 'batch'],
+                        kernel_map), model
 
 
 def train_tree_classifier(fn_name, feats, labels, kernel_map, **kwargs):
@@ -70,6 +74,8 @@ class Top1():
     def __init__(self, dataset):
         counts = dataset.normalized.idxmax(axis=1).value_counts()
         self.best_config = counts.idxmax()
+        self.classes = [self.best_config]
+        print("top1: ", self.classes)
 
     def get_config(self, m, k, n, batch):
         return self.best_config
@@ -95,6 +101,8 @@ class Top8():
         )
         exec(top8_tree, globals())
         self.config_fn = top8_tree_fn
+        self.classes = top_8
+        print("top8: ", self.classes)
 
     def get_config(self, m, k, n, batch):
         return self.config_fn(m, k, n, batch)
@@ -122,6 +130,8 @@ class KMeansTree():
         )
         exec(kmeans_tree, globals())
         self.config_fn = kmeans_tree_fn
+        self.classes = kernel_map
+        print("kmeans: ", self.classes)
 
     def get_config(self, m, k, n, batch):
         return self.config_fn(m, k, n, batch)
@@ -134,7 +144,7 @@ class HDBScanTree():
         # HDBScan is a better clustering algorithm that may give a better set of
         # representatives.
         clusterer = hdbscan.HDBSCAN(metric='l2',
-                                    min_cluster_size=3,
+                                    min_cluster_size=2,
                                     min_samples=7)
         clusterer.fit(dataset.normalized)
         assert clusterer.labels_.max() < 8
@@ -164,6 +174,8 @@ class HDBScanTree():
         )
         exec(scan_tree, globals())
         self.config_fn = scan_tree_fn
+        self.classes = kernel_map
+        print("hdbscan: ", kernel_map)
 
     def get_config(self, m, k, n, batch):
         return self.config_fn(m, k, n, batch)
@@ -175,7 +187,7 @@ class DecisionTree():
     def __init__(self, dataset):
         # Can use a decision tree regressor to try to model the full data set without
         # pruning, by setting the maximum number of leaf nodes.
-        reg_tree = train_tree_regressor(
+        reg_tree, model = train_tree_regressor(
             'reg_tree_fn',
             dataset.features,
             dataset.normalized,
@@ -184,8 +196,11 @@ class DecisionTree():
             min_samples_leaf=3,
             max_leaf_nodes=8,
         )
+
         exec(reg_tree, globals())
         self.config_fn = reg_tree_fn
+        self.classes = re.findall(r'return \'(.*)\'', reg_tree)
+        print("dec tree: ", self.classes)
 
     def get_config(self, m, k, n, batch):
         return self.config_fn(m, k, n, batch)
@@ -196,14 +211,14 @@ vgg = load_cached('vgg_batch1_matmuls_amd_out.csv')
 mobilenet = load_cached('mobilenet_batch1_matmuls_amd_out.csv')
 
 res_vgg = combine(resnet, vgg)
-vgg_mob = combine(vgg, mobilenet)
-mob_res = combine(mobilenet, resnet)
-
 all_data = combine(res_vgg, mobilenet)
 
 MODELS = [Top1, Top8, DecisionTree, KMeansTree, HDBScanTree]
-#MODELS = [KMeansTree]
-DATASETS = [vgg, resnet, mobilenet]
+
+feat_train, feat_test, norm_train, norm_test, val_train, val_test = train_test_split(
+    all_data.features, all_data.normalized, all_data.values, test_size=0.2)
+print(feat_train)
+print(feat_test)
 
 
 def compare_train(train, test):
@@ -213,14 +228,9 @@ def compare_train(train, test):
         print("{} error: {}".format(model.name, error))
 
 
-#print("Train resnet, vgg. Test mobilenet")
-#compare_train(res_vgg, mobilenet)
-#print("\nTrain vgg, mobilenet. Test resnet")
-#compare_train(vgg_mob, resnet)
-#print("\nTrain mobilenet, resnet. Test vgg")
-#compare_train(mob_res, vgg)
-
-
-compare_train(all_data, mobilenet)
-compare_train(all_data, resnet)
-compare_train(all_data, vgg)
+compare_train(
+    DataSet(feat_train.reset_index(drop=True),
+            norm_train.reset_index(drop=True),
+            val_train.reset_index(drop=True)),
+    DataSet(feat_test.reset_index(drop=True), norm_test.reset_index(drop=True),
+            val_test.reset_index(drop=True)))
