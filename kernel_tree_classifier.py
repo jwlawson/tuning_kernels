@@ -9,8 +9,14 @@ from scipy.stats import mstats
 
 import sklearn.tree as sktree
 from sklearn.tree import _tree as sktree_internal
-from sklearn.cluster import KMeans
+
+from sklearn.cluster import KMeans as skKMeans
+from sklearn.cluster import SpectralClustering
+
 from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
+
+from sklearn.neighbors import KNeighborsClassifier as skNeighborsClassifier
 
 from load import *
 
@@ -47,19 +53,6 @@ def tree_to_code(fn_name, tree, feature_names, value_map):
     return '\n'.join(output)
 
 
-def train_tree_regressor(fn_name, feats, labels, kernel_map, **kwargs):
-    model = sktree.DecisionTreeRegressor(random_state=0, **kwargs)
-    model = model.fit(feats, labels)
-    return tree_to_code(fn_name, model, ['m', 'k', 'n', 'batch'],
-                        kernel_map), model
-
-
-def train_tree_classifier(fn_name, feats, labels, kernel_map, **kwargs):
-    model = sktree.DecisionTreeClassifier(random_state=0, **kwargs)
-    model = model.fit(feats, labels)
-    return tree_to_code(fn_name, model, ['m', 'k', 'n', 'batch'], kernel_map)
-
-
 def get_errors_for(classifier, dataset):
     return [
         dataset.normalized.iloc[i][classifier.get_config(
@@ -68,86 +61,95 @@ def get_errors_for(classifier, dataset):
     ]
 
 
-class Top1():
-    name = "Top1"
+def get_perfect_errors_for(labels, dataset):
+    limited_norm = dataset.normalized[labels]
+    return limited_norm.max(axis=1)
 
-    def __init__(self, dataset):
+
+def get_tree_classifier_for(fn_name, labels, dataset):
+    limited_norm = dataset.normalized[labels]
+    return train_tree_classifier(fn_name,
+                                 dataset.features,
+                                 limited_norm,
+                                 limited_norm.columns,
+                                 min_samples_split=3,
+                                 min_samples_leaf=3)
+
+
+class TopN():
+    cls_name = "Top"
+    def __init__(self, dataset, n_classes):
         counts = dataset.normalized.idxmax(axis=1).value_counts()
-        self.best_config = counts.idxmax()
-        self.classes = [self.best_config]
-        print("top1: ", self.classes)
-
-    def get_config(self, m, k, n, batch):
-        return self.best_config
+        top_n = counts.nlargest(n=n_classes).index
+        self.classes = top_n
+        self.name = "{}{}".format(self.cls_name, n_classes)
 
 
-class Top8():
-    name = "Top8"
-
-    def __init__(self, dataset):
-        counts = dataset.normalized.idxmax(axis=1).value_counts()
-        top_8 = counts.nlargest(n=8).index
-        top8_labels = [
-            dataset.normalized.iloc[i][top_8].idxmax()
-            for i in range(dataset.normalized.shape[0])
-        ]
-        top8_tree = train_tree_classifier(
-            'top8_tree_fn',
-            dataset.features,
-            top8_labels,
-            top_8,
-            min_samples_split=3,
-            min_samples_leaf=3,
-        )
-        exec(top8_tree, globals())
-        self.config_fn = top8_tree_fn
-        self.classes = top_8
-        print("top8: ", self.classes)
-
-    def get_config(self, m, k, n, batch):
-        return self.config_fn(m, k, n, batch)
-
-
-class KMeansTree():
-    name = "KMeansTree"
-
-    def __init__(self, dataset):
+class KMeans():
+    cls_name = "KMeans"
+    def __init__(self, dataset, n_classes):
         # Try using kmeans to work out clusters of results, so that we can pick
         # 'representatives' of each cluster to use as our kernel selection. This
         # provides classes to use in a decision tree classifier.
-        kmeans = KMeans(n_clusters=8, random_state=0).fit(dataset.normalized)
+        kmeans = skKMeans(n_clusters=n_classes,
+                        random_state=0).fit(dataset.normalized)
         kernel_map = [
             dataset.normalized.columns[np.argmax(vec)]
             for vec in kmeans.cluster_centers_
         ]
-        kmeans_tree = train_tree_classifier(
-            'kmeans_tree_fn',
-            dataset.features,
-            kmeans.labels_,
-            kernel_map,
-            min_samples_split=5,
-            min_samples_leaf=5,
-        )
-        exec(kmeans_tree, globals())
-        self.config_fn = kmeans_tree_fn
         self.classes = kernel_map
-        print("kmeans: ", self.classes)
-
-    def get_config(self, m, k, n, batch):
-        return self.config_fn(m, k, n, batch)
+        self.name = "{}{}".format(self.cls_name, n_classes)
 
 
-class HDBScanTree():
-    name = "HDBScanTree"
+class Spectral():
+    cls_name = "Spectral"
+    def __init__(self, dataset, n_classes):
+        cluster = SpectralClustering(n_clusters=n_classes,
+                                     random_state=0,
+                                     assign_labels='kmeans')
+        cluster = cluster.fit(dataset.normalized)
+        labels = cluster.labels_
 
-    def __init__(self, dataset):
+        def extract_class_for(label):
+            "For given label, extract all data in that label and get best kernel for them."
+            data = dataset.normalized.loc[labels == label]
+            if data.size == 0:
+                return ''
+            #return data.idxmax(axis=1).value_counts().idxmax()
+            return data.mean(axis=0).idxmax()
+
+        kernel_map = [extract_class_for(i) for i in range(0, n_classes)]
+        kernel_map = [x for x in kernel_map if x != '']
+        self.classes = kernel_map
+        self.name = "{}{}".format(self.cls_name, n_classes)
+
+
+class HDBScan():
+    cls_name = "HDBScan"
+    PARAM_MAP = {
+        15: ('l1', 3, 3),
+        14: ('l1', 4, 2),
+        13: ('l1', 4, 2),
+        12: ('l1', 4, 2),
+        11: ('l1', 4, 3),
+        10: ('l1', 2, 4),
+        9: ('l1', 3, 4),
+        8: ('l1', 2, 5),
+        7: ('l1', 5, 3),
+        6: ('l1', 6, 3),
+        5: ('l1', 9, 1),
+        4: ('l1', 2, 13),
+    }
+
+    def __init__(self, dataset, n_classes):
         # HDBScan is a better clustering algorithm that may give a better set of
         # representatives.
-        clusterer = hdbscan.HDBSCAN(metric='l2',
-                                    min_cluster_size=2,
-                                    min_samples=7)
+        m, c, s = HDBScan.PARAM_MAP[n_classes]
+        clusterer = hdbscan.HDBSCAN(metric=m,
+                                    min_cluster_size=c,
+                                    min_samples=s)
         clusterer.fit(dataset.normalized)
-        assert clusterer.labels_.max() < 8
+        assert clusterer.labels_.max() <= n_classes
 
         # For each cluster, choose a representative that gives the best overall
         # performance for the class exemplars.
@@ -164,46 +166,27 @@ class HDBScanTree():
             scan_labels[idx] = chosen_values.idxmax()
 
         kernel_map = [dataset.normalized.columns[i] for i in chosen_labels]
-        scan_tree = train_tree_classifier(
-            'scan_tree_fn',
-            dataset.features,
-            scan_labels,
-            kernel_map,
-            min_samples_split=3,
-            min_samples_leaf=2,
-        )
-        exec(scan_tree, globals())
-        self.config_fn = scan_tree_fn
         self.classes = kernel_map
-        print("hdbscan: ", kernel_map)
-
-    def get_config(self, m, k, n, batch):
-        return self.config_fn(m, k, n, batch)
+        self.name = "{}{}".format(self.cls_name, n_classes)
 
 
 class DecisionTree():
-    name = "DecisionTree"
-
-    def __init__(self, dataset):
+    cls_name = "DecisionTree"
+    def __init__(self, dataset, n_classes):
         # Can use a decision tree regressor to try to model the full data set without
         # pruning, by setting the maximum number of leaf nodes.
-        reg_tree, model = train_tree_regressor(
-            'reg_tree_fn',
-            dataset.features,
-            dataset.normalized,
-            dataset.normalized.columns,
+        model = sktree.DecisionTreeRegressor(
+            random_state=0,
             min_samples_split=3,
             min_samples_leaf=3,
-            max_leaf_nodes=8,
+            max_leaf_nodes=n_classes,
         )
-
-        exec(reg_tree, globals())
-        self.config_fn = reg_tree_fn
-        self.classes = re.findall(r'return \'(.*)\'', reg_tree)
-        print("dec tree: ", self.classes)
-
-    def get_config(self, m, k, n, batch):
-        return self.config_fn(m, k, n, batch)
+        model = model.fit(dataset.features, dataset.normalized)
+        self.classes = [
+            dataset.normalized.columns[np.argmax(vec)]
+            for vec in model.tree_.value
+        ]
+        self.name = "{}{}".format(self.cls_name, n_classes)
 
 
 resnet = load_cached('resnet_batch1_matmuls_amd_out.csv')
@@ -213,24 +196,95 @@ mobilenet = load_cached('mobilenet_batch1_matmuls_amd_out.csv')
 res_vgg = combine(resnet, vgg)
 all_data = combine(res_vgg, mobilenet)
 
-MODELS = [Top1, Top8, DecisionTree, KMeansTree, HDBScanTree]
+
+def print_component_numbers_from_pca(values):
+    pca = PCA()
+    pca.fit(values)
+    cumsum = np.cumsum(pca.explained_variance_ratio_)
+    print("Number components for 80% variance: ", np.argmax(cumsum > 0.8) + 1)
+    print("Number components for 90% variance: ", np.argmax(cumsum > 0.9) + 1)
+    print("Number components for 95% variance: ", np.argmax(cumsum > 0.95) + 1)
+
+
+print_component_numbers_from_pca(all_data.normalized)
+
+MODELS = [TopN, DecisionTree, KMeans, HDBScan, Spectral]
+#MODELS = [DecisionTree]
+
+N_CLASSES = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 feat_train, feat_test, norm_train, norm_test, val_train, val_test = train_test_split(
-    all_data.features, all_data.normalized, all_data.values, test_size=0.2)
-print(feat_train)
-print(feat_test)
+    all_data.features,
+    all_data.normalized,
+    all_data.values,
+    test_size=0.2,
+    random_state=42)
+
+
+def get_dataset_from(feat, norm, val):
+    return DataSet(feat.reset_index(drop=True), norm.reset_index(drop=True),
+                   val.reset_index(drop=True))
+
+
+train_dataset = get_dataset_from(feat_train, norm_train, val_train)
+test_dataset = get_dataset_from(feat_test, norm_test, val_test)
+
+chosen_labels = {}
 
 
 def compare_train(train, test):
-    for model in MODELS:
-        m = model(train)
-        error = geom_mean(get_errors_for(m, test))
-        print("{} error: {}".format(model.name, error))
+    for n_c in N_CLASSES:
+        for model in MODELS:
+            m = model(train, n_c)
+            labels = m.classes
+            error = geom_mean(get_perfect_errors_for(labels, test))
+            chosen_labels[m.name] = labels
+            print("{},{},{}".format(m.__class__.__name__, n_c, error))
 
 
-compare_train(
-    DataSet(feat_train.reset_index(drop=True),
-            norm_train.reset_index(drop=True),
-            val_train.reset_index(drop=True)),
-    DataSet(feat_test.reset_index(drop=True), norm_test.reset_index(drop=True),
-            val_test.reset_index(drop=True)))
+print("--- Kernel pruning performance ---")
+compare_train(train_dataset, test_dataset)
+
+
+def get_targets_for_given_configs(dataset, labels):
+    limited_norm = dataset.normalized[labels]
+    return limited_norm.idxmax(axis=1)
+
+
+class GenModel():
+
+    def __init__(self, model, classifier):
+        labels = chosen_labels[model]
+        x_labels = get_targets_for_given_configs(train_dataset, labels)
+        self.model = classifier.fit(train_dataset.features, x_labels)
+
+    def get_config(self, m, k, n, batch):
+        return self.model.predict(np.asarray([(m, k, n, batch)]))
+
+
+def get_classifier_performance(model):
+    errors = [
+        test_dataset.normalized.iloc[i][model.get_config(
+            **test_dataset.features.iloc[i].to_dict())]
+        for i in range(test_dataset.normalized.shape[0])
+    ]
+    return geom_mean(errors)
+
+def gen_tree_classifier():
+    return sktree.DecisionTreeClassifier(random_state=0)
+
+def gen_nearest_neighbor():
+    return skNeighborsClassifier(n_neighbors=7, metric='l2')
+
+CLASSIFIER_GEN = [gen_tree_classifier, gen_nearest_neighbor]
+
+def compare_classifiers():
+    for classifier in CLASSIFIER_GEN:
+        for n_c in N_CLASSES:
+            for model in MODELS:
+                classes = '{}{}'.format(model.cls_name, n_c)
+                m = GenModel(classes, classifier())
+                print(classes, classifier.__name__, get_classifier_performance(m))
+
+print("--- Classifier performance ---")
+compare_classifiers()
