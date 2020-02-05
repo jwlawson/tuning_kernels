@@ -46,8 +46,8 @@ def tree_to_code(fn_name, tree, feature_names, value_map):
                 indent, name, threshold))
             recurse(tree_.children_right[node], depth + 1)
         else:
-            output.append("{}return '{}'".format(
-                indent, value_map[np.argmax(tree_.value[node])]))
+            output.append("{}return '{}'".format(indent, value_map[np.argmax(
+                tree_.value[node])]))
 
     recurse(0, 1)
     return '\n'.join(output)
@@ -68,16 +68,18 @@ def get_perfect_errors_for(labels, dataset):
 
 def get_tree_classifier_for(fn_name, labels, dataset):
     limited_norm = dataset.normalized[labels]
-    return train_tree_classifier(fn_name,
-                                 dataset.features,
-                                 limited_norm,
-                                 limited_norm.columns,
-                                 min_samples_split=3,
-                                 min_samples_leaf=3)
+    return train_tree_classifier(
+        fn_name,
+        dataset.features,
+        limited_norm,
+        limited_norm.columns,
+        min_samples_split=3,
+        min_samples_leaf=3)
 
 
 class TopN():
     cls_name = "Top"
+
     def __init__(self, dataset, n_classes):
         counts = dataset.normalized.idxmax(axis=1).value_counts()
         top_n = counts.nlargest(n=n_classes).index
@@ -87,12 +89,13 @@ class TopN():
 
 class KMeans():
     cls_name = "KMeans"
+
     def __init__(self, dataset, n_classes):
         # Try using kmeans to work out clusters of results, so that we can pick
         # 'representatives' of each cluster to use as our kernel selection. This
         # provides classes to use in a decision tree classifier.
-        kmeans = skKMeans(n_clusters=n_classes,
-                        random_state=0).fit(dataset.normalized)
+        kmeans = skKMeans(
+            n_clusters=n_classes, random_state=0).fit(dataset.normalized)
         kernel_map = [
             dataset.normalized.columns[np.argmax(vec)]
             for vec in kmeans.cluster_centers_
@@ -101,12 +104,38 @@ class KMeans():
         self.name = "{}{}".format(self.cls_name, n_classes)
 
 
+class PCAKMeans():
+    cls_name = "PCAKMeans"
+
+    def _invert_pca(self, pca, mu, data):
+        n_comp = pca.n_components
+        Xhat = np.dot(data[:, :n_comp], pca.components_[:n_comp, :])
+        Xhat += mu
+        return Xhat
+
+    def __init__(self, dataset, n_classes):
+        data = dataset.normalized.reset_index(drop=True)
+        pca = PCA(n_components=25)
+        pca.fit(data)
+        mu = data.mean(axis=0).to_numpy()
+
+        transformed = pca.transform(data)
+        kmeans = skKMeans(
+            n_clusters=n_classes, random_state=0).fit(transformed)
+
+        centroids = self._invert_pca(pca, mu, kmeans.cluster_centers_)
+
+        kernel_map = [data.columns[np.argmax(vec)] for vec in centroids]
+        self.classes = kernel_map
+        self.name = "{}{}".format(self.cls_name, n_classes)
+
+
 class Spectral():
     cls_name = "Spectral"
+
     def __init__(self, dataset, n_classes):
-        cluster = SpectralClustering(n_clusters=n_classes,
-                                     random_state=0,
-                                     assign_labels='kmeans')
+        cluster = SpectralClustering(
+            n_clusters=n_classes, random_state=0, assign_labels='kmeans')
         cluster = cluster.fit(dataset.normalized)
         labels = cluster.labels_
 
@@ -145,9 +174,8 @@ class HDBScan():
         # HDBScan is a better clustering algorithm that may give a better set of
         # representatives.
         m, c, s = HDBScan.PARAM_MAP[n_classes]
-        clusterer = hdbscan.HDBSCAN(metric=m,
-                                    min_cluster_size=c,
-                                    min_samples=s)
+        clusterer = hdbscan.HDBSCAN(
+            metric=m, min_cluster_size=c, min_samples=s)
         clusterer.fit(dataset.normalized)
         assert clusterer.labels_.max() <= n_classes
 
@@ -156,15 +184,6 @@ class HDBScan():
         chosen_labels = [
             np.argmax(mstats.gmean(x, axis=0)) for x in clusterer.exemplars_
         ]
-        scan_labels = clusterer.labels_
-
-        # For any outliers that were not already classified, choose the class
-        # that has the best performance.
-        odd_ones = dataset.normalized[scan_labels < 1]
-        for idx, values in odd_ones.iterrows():
-            chosen_values = values[chosen_labels].reset_index(drop=True)
-            scan_labels[idx] = chosen_values.idxmax()
-
         kernel_map = [dataset.normalized.columns[i] for i in chosen_labels]
         self.classes = kernel_map
         self.name = "{}{}".format(self.cls_name, n_classes)
@@ -172,6 +191,7 @@ class HDBScan():
 
 class DecisionTree():
     cls_name = "DecisionTree"
+
     def __init__(self, dataset, n_classes):
         # Can use a decision tree regressor to try to model the full data set without
         # pruning, by setting the maximum number of leaf nodes.
@@ -208,8 +228,7 @@ def print_component_numbers_from_pca(values):
 
 print_component_numbers_from_pca(all_data.normalized)
 
-MODELS = [TopN, DecisionTree, KMeans, HDBScan, Spectral]
-#MODELS = [DecisionTree]
+MODELS = [TopN, DecisionTree, KMeans, PCAKMeans, HDBScan, Spectral]
 
 N_CLASSES = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
@@ -222,8 +241,10 @@ feat_train, feat_test, norm_train, norm_test, val_train, val_test = train_test_s
 
 
 def get_dataset_from(feat, norm, val):
-    return DataSet(feat.reset_index(drop=True), norm.reset_index(drop=True),
-                   val.reset_index(drop=True))
+    return DataSet(
+        feat.reset_index(drop=True),
+        norm.reset_index(drop=True),
+        val.reset_index(drop=True))
 
 
 train_dataset = get_dataset_from(feat_train, norm_train, val_train)
@@ -252,7 +273,6 @@ def get_targets_for_given_configs(dataset, labels):
 
 
 class GenModel():
-
     def __init__(self, model, classifier):
         labels = chosen_labels[model]
         x_labels = get_targets_for_given_configs(train_dataset, labels)
@@ -270,13 +290,26 @@ def get_classifier_performance(model):
     ]
     return geom_mean(errors)
 
+
 def gen_tree_classifier():
     return sktree.DecisionTreeClassifier(random_state=0)
+
+
+def gen_limited_tree_classifier():
+    return sktree.DecisionTreeClassifier(
+        random_state=0, max_depth=5, min_samples_split=4, min_samples_leaf=3)
+
 
 def gen_nearest_neighbor():
     return skNeighborsClassifier(n_neighbors=7, metric='l2')
 
-CLASSIFIER_GEN = [gen_tree_classifier, gen_nearest_neighbor]
+
+CLASSIFIER_GEN = [
+    gen_tree_classifier,
+    gen_limited_tree_classifier,
+    gen_nearest_neighbor,
+]
+
 
 def compare_classifiers():
     for classifier in CLASSIFIER_GEN:
@@ -284,7 +317,9 @@ def compare_classifiers():
             for model in MODELS:
                 classes = '{}{}'.format(model.cls_name, n_c)
                 m = GenModel(classes, classifier())
-                print(classes, classifier.__name__, get_classifier_performance(m))
+                print(classes, classifier.__name__,
+                      get_classifier_performance(m))
+
 
 print("--- Classifier performance ---")
 compare_classifiers()
