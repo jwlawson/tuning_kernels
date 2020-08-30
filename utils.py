@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from scipy.stats import mstats
@@ -10,6 +12,13 @@ def geom_mean(values):
     return mstats.gmean(values)
 
 
+def config_to_launch(config):
+    tiles, wgs = config.split(':')
+    tiles = tiles.split('_')
+    wgs = wgs.split('_')
+    return 'LAUNCH({0[0]}, {0[1]}, {0[2]}, {1[0]}, {1[1]}, {1[2]})'.format(tiles, wgs)
+
+
 def tree_to_code(fn_name, tree, feature_names, value_map):
     '''
     Convert a descision tree to a python function.
@@ -20,10 +29,11 @@ def tree_to_code(fn_name, tree, feature_names, value_map):
         def fn(a, b, c):
           if a < 10:
             return 'x'
-          elif b < 1:
-            return 'y'
-          else
-            return 'z'
+          else:
+            if b < 1:
+              return 'y'
+            else:
+              return 'z'
     '''
     tree_ = tree.tree_
     feature_name = [
@@ -31,24 +41,42 @@ def tree_to_code(fn_name, tree, feature_names, value_map):
         if i != sktree_internal.TREE_UNDEFINED else "undefined!"
         for i in tree_.feature
     ]
-    output = ["def {}({}):".format(fn_name, ", ".join(feature_names))]
+    tree_string = ["def {}({}):".format(fn_name, ", ".join(feature_names))]
 
-    def recurse(node, depth):
-        indent = "  " * depth
+    def indent(strings):
+        return ["  {}".format(s) for s in strings]
+
+    def recurse(node):
         if tree_.feature[node] != sktree_internal.TREE_UNDEFINED:
             name = feature_name[node]
+            if '/' in name:
+                name = '(float){}'.format(name)
             threshold = tree_.threshold[node]
-            output.append("{}if {} <= {}:".format(indent, name, threshold))
-            recurse(tree_.children_left[node], depth + 1)
-            output.append("{}else:  # if {} > {}".format(
-                indent, name, threshold))
-            recurse(tree_.children_right[node], depth + 1)
-        else:
-            output.append("{}return '{}'".format(
-                indent, value_map[np.argmax(tree_.value[node])]))
+            if threshold == math.floor(threshold):
+                threshold = int(threshold)
+            left_output = recurse(tree_.children_left[node])
+            right_output = recurse(tree_.children_right[node])
 
-    recurse(0, 1)
-    return '\n'.join(output)
+            if left_output == right_output:
+                # Return early to avoid extra indentation
+                return left_output
+            else:
+                output = [
+                    "if ({} <= {}) {{".format(name, threshold),
+                    *left_output,
+                    "} else {",
+                    *right_output,
+                    "}",
+                ]
+        else:
+            return_value = value_map[np.argmax(tree_.value[node])]
+            return_value = config_to_launch(return_value)
+            output = ["return {};".format(return_value)]
+
+        return indent(output)
+
+    tree_string += recurse(0)
+    return '\n'.join(tree_string)
 
 
 def get_errors_for(classifier, dataset):
